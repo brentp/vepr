@@ -44,32 +44,15 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           EXT: ${{ matrix.ext }}
-        run: |
-          mkdir -p dist
-          go build -trimpath -ldflags="-s -w -buildid=" -o "dist/vepr${EXT}" .
-
-      - name: Package binary
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          EXT: ${{ matrix.ext }}
           TAG: ${{ github.ref_name }}
         run: |
-          package="vepr_${TAG}_${GOOS}_${GOARCH}"
-          mkdir -p "$package"
-          cp "dist/vepr${EXT}" "$package/"
-          if [ "$GOOS" = "windows" ]; then
-            zip -r "${package}.zip" "$package"
-          else
-            tar -czf "${package}.tar.gz" "$package"
-          fi
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -buildid=" -o "dist/vepr_${TAG}_${GOOS}_${GOARCH}${EXT}" .
 
       - uses: actions/upload-artifact@v4
         with:
           name: vepr-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            *.tar.gz
-            *.zip
+          path: dist/*
           if-no-files-found: error
 
   publish:
