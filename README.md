@@ -25,12 +25,6 @@ This exists because VEP can become very memory hungry and much slower when a VCF
 go build -o vepr .
 ```
 
-If this directory is not inside a Git checkout and Go complains about VCS stamping:
-
-```bash
-go build -buildvcs=false -o vepr .
-```
-
 ## Usage
 
 Put `vepr` options before `--`. Put VEP options after `--`; they are passed through to each VEP process.
@@ -46,37 +40,6 @@ vepr \
   --offline \
   --assembly GRCh38 \
   --species homo_sapiens
-```
-
-Use more VEP workers:
-
-```bash
-vepr -i cohort.vcf.gz -o cohort.vep.vcf.gz -j 8 -- --cache --offline
-```
-
-Use smaller chunks:
-
-```bash
-vepr -i cohort.vcf.gz -o cohort.vep.vcf.gz --chunk-size 100000 -- --cache --offline
-```
-
-Write BCF:
-
-```bash
-vepr -i cohort.vcf.gz -o cohort.vep.bcf -- --cache --offline
-```
-
-Use explicit executable paths:
-
-```bash
-vepr \
-  --input cohort.vcf.gz \
-  --output cohort.vep.vcf \
-  --bcftools-bin /opt/bin/bcftools \
-  --vep-bin /opt/vep/vep \
-  -- \
-  --cache \
-  --offline
 ```
 
 ## Options
