@@ -104,6 +104,8 @@ The output order matches the input order. If chunks finish out of order, `vepr` 
 
 Sample paste-back validates `CHROM`, `POS`, `REF`, and `ALT`; VEP options that rewrite coordinates or alleles will fail rather than risk attaching samples to the wrong variant.
 
+Use `vepr`'s `--jobs` for parallelism, not VEP's own `--fork`. Paste-back matches each annotated record to its samples in order, so if `--fork` reorders records within a chunk the run will abort with a sample key mismatch.
+
 Index compressed output with `bcftools index`:
 
 ```bash
