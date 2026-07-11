@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,6 +279,40 @@ func TestBCFToolsOutputTypeFromFilename(t *testing.T) {
 	}
 }
 
+func TestParseArgsDropsSeparatorBeforeVEPArgs(t *testing.T) {
+	_, vepArgs, err := parseArgs([]string{"--input", "in.vcf.gz", "--", "--cache", "--offline"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--cache", "--offline"}
+	if strings.Join(vepArgs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got %v, want %v", vepArgs, want)
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	tests := map[string]slog.Level{
+		"":      slog.LevelInfo,
+		"debug": slog.LevelDebug,
+		"info":  slog.LevelInfo,
+		"warn":  slog.LevelWarn,
+		"error": slog.LevelError,
+	}
+	for name, want := range tests {
+		got, err := parseLogLevel(name)
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%q: got %v, want %v", name, got, want)
+		}
+	}
+
+	if _, err := parseLogLevel("trace"); err == nil {
+		t.Fatal("expected unsupported log level error")
+	}
+}
+
 func dataLines(vcf string) []string {
 	var out []string
 	for _, line := range strings.Split(vcf, "\n") {
@@ -300,7 +335,7 @@ for arg in "$@"; do
   case "$arg" in
     view|-I|-Ov|-Oz|-Ob) ;;
     -G) drop=1 ;;
-    -O) skip_next=1 ;;
+    -O|--threads) skip_next=1 ;;
     -o) want_out=1 ;;
     *)
       if [ "$want_out" = "1" ]; then

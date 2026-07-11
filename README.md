@@ -7,7 +7,7 @@ This exists because VEP can become very memory hungry and much slower when a VCF
 ## What it does
 
 1. Runs `bcftools view -I` once and splits each record into its eight site columns (fed to VEP) and a sidecar holding the original `FORMAT` and sample columns.
-2. Splits the site stream into chunks. The default chunk size is `500000` variants.
+2. Splits the site stream into chunks. The default chunk size is `10000` variants.
 3. Runs multiple VEP processes. The default is `2` concurrent processes.
 4. Buffers out-of-order finished chunks and writes them back in the original order.
 5. Pastes the original `FORMAT` and sample columns back onto the matching annotated variants, verified by `CHROM/POS/REF/ALT` so a reordered or dropped VEP record is rejected rather than misaligned.
@@ -33,7 +33,7 @@ Put `vepr` options before `--`. Put VEP options after `--`; they are passed thro
 vepr \
   --input cohort.vcf.gz \
   --output cohort.vep.vcf.gz \
-  --chunk-size 500000 \
+  --chunk-size 10000 \
   --jobs 2 \
   -- \
   --cache \
@@ -46,13 +46,14 @@ vepr \
 
 - `--input`, `-i`: input VCF/BCF. Required.
 - `--output`, `-o`: output path ending in `.vcf`, `.vcf.gz`, `.vcf.bgz`, or `.bcf`. Defaults to plain VCF on stdout.
-- `--chunk-size`: variants per VEP chunk. Defaults to `500000`.
+- `--chunk-size`: variants per VEP chunk. Defaults to `10000`.
 - `--jobs`, `-j`: parallel VEP processes. Defaults to `2`.
 - `--bcftools-bin`: bcftools executable. Defaults to `bcftools`.
 - `--vep-bin`: VEP executable. Defaults to `vep`.
 - `--tmp-dir`: parent directory for temporary chunk files.
 - `--keep-temp`: keep temporary chunk files for debugging.
 - `--vep-stats`: allow VEP stats files. By default `vepr` adds `--no_stats` for chunk runs.
+- `--log-level`: log level: `debug`, `info`, `warn`, or `error`. Defaults to `info`.
 
 ## Notes
 

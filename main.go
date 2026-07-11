@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,11 +16,12 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/pflag"
 )
 
-const defaultChunkSize = 500000
+const defaultChunkSize = 10000
 
 type config struct {
 	Input       string
@@ -31,6 +33,7 @@ type config struct {
 	TmpDir      string
 	KeepTemp    bool
 	VEPStats    bool
+	LogLevel    string
 }
 
 type headerMeta struct {
@@ -70,11 +73,19 @@ func main() {
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	if err := run(ctx, cfg, vepArgs); err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "interrupted")
+			os.Exit(130)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	stop()
 }
 
 func parseArgs(args []string) (config, []string, error) {
@@ -84,6 +95,7 @@ func parseArgs(args []string) (config, []string, error) {
 		Jobs:        2,
 		VEPBin:      "vep",
 		BCFToolsBin: "bcftools",
+		LogLevel:    "info",
 	}
 
 	flags := pflag.NewFlagSet("vepr", pflag.ContinueOnError)
@@ -97,6 +109,7 @@ func parseArgs(args []string) (config, []string, error) {
 	flags.StringVar(&cfg.TmpDir, "tmp-dir", cfg.TmpDir, "temporary directory")
 	flags.BoolVar(&cfg.KeepTemp, "keep-temp", cfg.KeepTemp, "keep temporary chunk files")
 	flags.BoolVar(&cfg.VEPStats, "vep-stats", cfg.VEPStats, "allow VEP to write per-chunk stats files")
+	flags.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug, info, warn, or error")
 
 	if err := flags.Parse(args); err != nil {
 		return config{}, nil, usageError(err)
@@ -110,14 +123,25 @@ func parseArgs(args []string) (config, []string, error) {
 	if cfg.Jobs <= 0 {
 		return config{}, nil, usageError(errors.New("--jobs must be greater than zero"))
 	}
-	return cfg, flags.Args(), nil
+	if _, err := parseLogLevel(cfg.LogLevel); err != nil {
+		return config{}, nil, usageError(err)
+	}
+	vepArgs := flags.Args()
+	if len(vepArgs) > 0 && vepArgs[0] == "--" {
+		vepArgs = vepArgs[1:]
+	}
+	return cfg, vepArgs, nil
 }
 
 func usageError(err error) error {
-	return fmt.Errorf("%w\n\nusage: vepr --input in.vcf.gz --output out.vcf.gz --chunk-size 500000 --jobs 2 -- [vep args]", err)
+	return fmt.Errorf("%w\n\nusage: vepr --input in.vcf.gz --output out.vcf.gz --chunk-size 10000 --jobs 2 -- [vep args]", err)
 }
 
 func run(ctx context.Context, cfg config, vepArgs []string) error {
+	logger, err := newLogger(cfg.LogLevel)
+	if err != nil {
+		return err
+	}
 	tmpDir, err := os.MkdirTemp(cfg.TmpDir, "vepr-")
 	if err != nil {
 		return fmt.Errorf("create temporary directory: %w", err)
@@ -146,7 +170,7 @@ func run(ctx context.Context, cfg config, vepArgs []string) error {
 	producerErr := make(chan error, 1)
 
 	go func() {
-		producerErr <- produceChunks(ctx, cfg, tmpDir, metaCh, jobs)
+		producerErr <- produceChunks(ctx, logger, cfg, tmpDir, metaCh, jobs)
 		close(jobs)
 	}()
 
@@ -167,7 +191,7 @@ func run(ctx context.Context, cfg config, vepArgs []string) error {
 		return ctx.Err()
 	}
 
-	startWorkers(ctx, cfg, tmpDir, vepArgs, jobs, results)
+	startWorkers(ctx, logger, cfg, tmpDir, vepArgs, jobs, results)
 	runErr := consumeResults(ctx, cancel, out, meta, results, producerErr, cfg.KeepTemp)
 	closeErr := closeOut()
 	outputClosed = true
@@ -180,21 +204,42 @@ func run(ctx context.Context, cfg config, vepArgs []string) error {
 	return nil
 }
 
-func startWorkers(ctx context.Context, cfg config, tmpDir string, vepArgs []string, jobs <-chan chunkJob, results chan<- chunkResult) {
+func newLogger(levelName string) (*slog.Logger, error) {
+	level, err := parseLogLevel(levelName)
+	if err != nil {
+		return nil, err
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})), nil
+}
+
+func parseLogLevel(name string) (slog.Level, error) {
+	if name == "" {
+		name = "info"
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(strings.ToUpper(name))); err != nil {
+		return slog.LevelInfo, fmt.Errorf("unsupported --log-level %q; use debug, info, warn, or error", name)
+	}
+	return level, nil
+}
+
+func startWorkers(ctx context.Context, logger *slog.Logger, cfg config, tmpDir string, vepArgs []string, jobs <-chan chunkJob, results chan<- chunkResult) {
 	var workers sync.WaitGroup
 	for i := 0; i < cfg.Jobs; i++ {
 		workers.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer workers.Done()
 			for job := range jobs {
+				logger.InfoContext(ctx, "starting VEP chunk", "worker", workerID, "chunk", job.index)
 				res := runVEPChunk(ctx, cfg, tmpDir, vepArgs, job)
 				select {
 				case results <- res:
+					logger.DebugContext(ctx, "sent VEP chunk result", "channel", "results", "chunk", res.index, "error", res.err != nil)
 				case <-ctx.Done():
 					return
 				}
 			}
-		}()
+		}(i + 1)
 	}
 	go func() {
 		workers.Wait()
@@ -213,7 +258,7 @@ func outputWriter(ctx context.Context, cfg config) (*bufio.Writer, func() error,
 		return nil, nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.BCFToolsBin, "view", outputType, "-o", cfg.Output, "-")
+	cmd := interruptibleCommand(ctx, cfg.BCFToolsBin, "view", outputType, "-o", cfg.Output, "-")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
@@ -265,10 +310,27 @@ func bcftoolsOutputType(path string) (string, error) {
 	}
 }
 
-func produceChunks(ctx context.Context, cfg config, tmpDir string, metaCh chan<- headerMeta, jobs chan<- chunkJob) error {
+func interruptibleCommand(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		if err == nil || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
+func produceChunks(ctx context.Context, logger *slog.Logger, cfg config, tmpDir string, metaCh chan<- headerMeta, jobs chan<- chunkJob) error {
 	bcftoolsCtx, cancel := context.WithCancel(ctx)
 
-	full, err := startBCFTools(bcftoolsCtx, cfg.BCFToolsBin, "view", []string{"view", "-I", "-O", "v", cfg.Input})
+	full, err := startBCFTools(bcftoolsCtx, cfg.BCFToolsBin, "view", []string{"view", "-I", "--threads", "3", "-O", "v", cfg.Input})
 	if err != nil {
 		cancel()
 		return err
@@ -280,6 +342,9 @@ func produceChunks(ctx context.Context, cfg config, tmpDir string, metaCh chan<-
 
 	fullHeader, originalChromLine, next, err := readVCFHeader(full.reader)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("read VCF header: %w", err)
 	}
 	if originalChromLine == "" {
@@ -289,6 +354,7 @@ func produceChunks(ctx context.Context, cfg config, tmpDir string, metaCh chan<-
 
 	select {
 	case metaCh <- headerMeta{chunkHeader: chunkHeader, originalChromLine: originalChromLine}:
+		logger.DebugContext(ctx, "sent VCF header metadata", "channel", "metaCh", "header_lines", len(chunkHeader))
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -307,6 +373,7 @@ func produceChunks(ctx context.Context, cfg config, tmpDir string, metaCh chan<-
 		}
 		select {
 		case jobs <- job:
+			logger.DebugContext(ctx, "sent VEP chunk job", "channel", "jobs", "chunk", job.index)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -342,6 +409,9 @@ func produceChunks(ctx context.Context, cfg config, tmpDir string, metaCh chan<-
 
 		next, err = full.reader.readLine()
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("read VCF record: %w", err)
 		}
 	}
@@ -446,7 +516,7 @@ func (c *chunkFiles) closeFiles() {
 }
 
 func startBCFTools(ctx context.Context, bin, name string, args []string) (*processReader, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := interruptibleCommand(ctx, bin, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -550,10 +620,13 @@ func runVEPChunk(ctx context.Context, cfg config, tmpDir string, vepArgs []strin
 		"--output_file", outputPath,
 	)
 
-	cmd := exec.CommandContext(ctx, cfg.VEPBin, args...)
+	cmd := interruptibleCommand(ctx, cfg.VEPBin, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return chunkResult{chunkJob: job, err: ctxErr}
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			return chunkResult{chunkJob: job, err: fmt.Errorf("vep chunk %d failed: %w", job.index, err)}
