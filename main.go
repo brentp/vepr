@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/spf13/pflag"
 )
@@ -308,23 +307,6 @@ func bcftoolsOutputType(path string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported output extension for %s; use .vcf, .vcf.gz, .vcf.bgz, .bcf, or -", path)
 	}
-}
-
-func interruptibleCommand(ctx context.Context, bin string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
-		}
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		if err == nil || errors.Is(err, syscall.ESRCH) {
-			return nil
-		}
-		return err
-	}
-	cmd.WaitDelay = 5 * time.Second
-	return cmd
 }
 
 func produceChunks(ctx context.Context, logger *slog.Logger, cfg config, tmpDir string, metaCh chan<- headerMeta, jobs chan<- chunkJob) error {
