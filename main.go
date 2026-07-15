@@ -330,6 +330,11 @@ func produceChunks(ctx context.Context, logger *slog.Logger, cfg config, tmpDir 
 		return fmt.Errorf("read VCF header: %w", err)
 	}
 	if originalChromLine == "" {
+		if next == nil {
+			if err := full.wait(); err != nil {
+				return err
+			}
+		}
 		return errors.New("VCF is missing #CHROM header")
 	}
 	chunkHeader := sampleFreeHeader(fullHeader)

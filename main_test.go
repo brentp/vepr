@@ -285,6 +285,39 @@ func TestRunVEPChunkStreamsProcessOutput(t *testing.T) {
 	}
 }
 
+func TestRunReportsBCFToolsFailureBeforeMissingHeader(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.vcf")
+	output := filepath.Join(dir, "output.vcf")
+	if err := os.WriteFile(input, []byte("unused\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bcftools := filepath.Join(dir, "bcftools")
+	if err := os.WriteFile(bcftools, []byte(fakeFailingBCFToolsScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config{
+		Input:       input,
+		Output:      output,
+		ChunkSize:   1,
+		Jobs:        1,
+		VEPBin:      filepath.Join(dir, "vep"),
+		BCFToolsBin: bcftools,
+		TmpDir:      dir,
+	}
+	err := run(context.Background(), cfg, nil)
+	if err == nil {
+		t.Fatal("expected bcftools failure")
+	}
+	if strings.Contains(err.Error(), "VCF is missing #CHROM header") {
+		t.Fatalf("bcftools failure was masked: %v", err)
+	}
+	if !strings.Contains(err.Error(), "could not open input") {
+		t.Fatalf("missing bcftools stderr: %v", err)
+	}
+}
+
 func TestBCFToolsOutputTypeFromFilename(t *testing.T) {
 	tests := map[string]string{
 		"out.vcf":     "-Ov",
@@ -309,6 +342,17 @@ func TestBCFToolsOutputTypeFromFilename(t *testing.T) {
 
 func TestParseArgsDropsSeparatorBeforeVEPArgs(t *testing.T) {
 	_, vepArgs, err := parseArgs([]string{"--input", "in.vcf.gz", "--", "--cache", "--offline"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--cache", "--offline"}
+	if strings.Join(vepArgs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got %v, want %v", vepArgs, want)
+	}
+}
+
+func TestParseArgsDropsExtraSeparatorBeforeVEPArgs(t *testing.T) {
+	_, vepArgs, err := parseArgs([]string{"--input", "in.vcf.gz", "--", "--", "--cache", "--offline"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,6 +479,11 @@ awk -v drop="$drop" 'BEGIN{FS=OFS="\t"}
   {
     if (drop) { print $1,$2,$3,$4,$5,$6,$7,$8 } else { print }
   }' "$input"
+`
+
+const fakeFailingBCFToolsScript = `#!/bin/sh
+printf '%s\n' 'could not open input' >&2
+exit 2
 `
 
 const fakeVEPScript = `#!/bin/sh
