@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -257,6 +258,33 @@ func TestRunRejectsReorderedVEPRecords(t *testing.T) {
 	}
 }
 
+func TestRunVEPChunkStreamsProcessOutput(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "input.vcf")
+	if err := os.WriteFile(input, []byte("##fileformat=VCFv4.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vep := filepath.Join(dir, "vep")
+	if err := os.WriteFile(vep, []byte(fakeLoggingVEPScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config{VEPBin: vep}
+	var res chunkResult
+	stdout, stderr := captureStdFiles(t, func() {
+		res = runVEPChunk(context.Background(), cfg, dir, nil, chunkJob{index: 1, inputPath: input})
+	})
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	if stdout != "vep stdout\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if stderr != "vep stderr\n" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
 func TestBCFToolsOutputTypeFromFilename(t *testing.T) {
 	tests := map[string]string{
 		"out.vcf":     "-Ov",
@@ -321,6 +349,51 @@ func dataLines(vcf string) []string {
 		}
 	}
 	return out
+}
+
+func captureStdFiles(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		_ = stderrR.Close()
+		_ = stderrW.Close()
+	}()
+
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+	fn()
+
+	if err := stdoutW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stderrW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	stdout, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := io.ReadAll(stderrR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(stdout), string(stderr)
 }
 
 const fakeBCFToolsScript = `#!/bin/sh
@@ -439,6 +512,19 @@ awk 'BEGIN{FS=OFS="\t"; added=0}
       print records[i]
     }
   }' "$in" > "$out"
+`
+
+const fakeLoggingVEPScript = `#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output_file) shift; out="$1" ;;
+  esac
+  shift
+done
+printf '%s\n' 'vep stdout'
+printf '%s\n' 'vep stderr' >&2
+: > "$out"
 `
 
 // fakeTruncatedRecordBCFToolsScript emits a valid header followed by a record

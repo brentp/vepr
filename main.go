@@ -603,17 +603,13 @@ func runVEPChunk(ctx context.Context, cfg config, tmpDir string, vepArgs []strin
 	)
 
 	cmd := interruptibleCommand(ctx, cfg.VEPBin, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return chunkResult{chunkJob: job, err: ctxErr}
 		}
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			return chunkResult{chunkJob: job, err: fmt.Errorf("vep chunk %d failed: %w", job.index, err)}
-		}
-		return chunkResult{chunkJob: job, err: fmt.Errorf("vep chunk %d failed: %w: %s", job.index, err, msg)}
+		return chunkResult{chunkJob: job, err: fmt.Errorf("vep chunk %d failed: %w", job.index, err)}
 	}
 	return chunkResult{chunkJob: job, outputPath: outputPath}
 }
